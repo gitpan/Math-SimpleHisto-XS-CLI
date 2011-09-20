@@ -1,0 +1,114 @@
+#!perl
+use strict;
+use warnings;
+use Getopt::Long qw(GetOptions);
+use Pod::Usage qw(pod2usage);
+use Term::Size ();
+use Math::SimpleHisto::XS;
+
+GetOptions(
+  my $opt = {nbins => 10},
+  'nbins=i',
+  'min=f',
+  'max=f',
+  'desc=s',
+  'help|h',
+  'man'
+);
+
+pod2usage({-verbose => 2}) if $opt->{man};
+pod2usage({-verbose => 0}) if $opt->{help};
+
+=pod
+
+=head1 NAME
+
+histify - generate simple histograms from streamed data
+
+=head1 SYNOPSIS
+
+  generator | histify [--nbins=X] [--min=X] [--max=X] \
+                      [--desc=<center|left|right|number|none>]
+
+Reads whitespace-separated numbers from STDIN and generates a
+histogram. If no histogram boundaries are specified using
+options, the number of bins defaults to 10 and the min/max are
+extracted from the data. That means reading all data into
+memory. If you specify min/max, the program works with constant
+memory overhead.
+
+Prints the resulting histogram contents one bin per line.
+
+Using --desc=<type> adds an extra column to the output before the
+histogram content (separated by a tab) that can be any one of:
+The bin "number", the bin "center", the "left" bin boundary, or
+the "right" bin boundary.
+
+=cut
+
+my $readall = (!defined($opt->{min}) || !defined($opt->{max}));
+
+my ($tcols, $trows) = Term::Size::chars(*STDOUT{IO});
+my $hist;
+
+# We don't know either min or max or neither
+if ($readall) {
+  my @d;
+  while (<STDIN>) {
+    chomp;
+    push @d, split " ", $_;
+  }
+  exit(0) if not @d;
+  my ($min, $max) = minmax(@d);
+  $opt->{min} = $min if not defined $opt->{min};
+  $opt->{max} = $max if not defined $opt->{max};
+
+  $hist = Math::SimpleHisto::XS->new(map {$_ => $opt->{$_}} qw(nbins min max));
+  $hist->fill(\@d);
+}
+else { # we have proper histogram boundaries
+  use constant BATCHSIZE => 1000;
+  $hist = Math::SimpleHisto::XS->new(map {$_ => $opt->{$_}} qw(nbins min max));
+  my @d;
+  while (<STDIN>) {
+    chomp;
+    push @d, split " ", $_;
+    if (@d >= BATCHSIZE) {
+      $hist->fill(\@d);
+      @d = ();
+    }
+  }
+  $hist->fill(\@d) if @d;
+}
+
+my $desc = lc($opt->{desc}||'');
+if ($desc eq '' or $desc eq 'none') {
+  print "$_\n" for @{ $hist->all_bin_contents };
+}
+elsif ($desc =~ /^(?:center|number|left|right)$/) {
+  my $content = $hist->all_bin_contents;
+  my $descriptions;
+  if    ($desc eq 'center') { $descriptions = $hist->bin_centers; }
+  elsif ($desc eq 'number') { $descriptions = [0..$hist->nbins-1]; }
+  elsif ($desc eq 'left')   { $descriptions = $hist->bin_lower_boundaries; }
+  elsif ($desc eq 'right')  { $descriptions = $hist->bin_upper_boundaries; }
+  
+  foreach my $bin (0..$hist->nbins-1) {
+    print "$descriptions->[$bin]\t$content->[$bin]\n";
+  }
+}
+else {
+  die "Invalid description mode";
+}
+
+
+
+sub minmax {
+  my ($min, $max);
+  for (@_) {
+    $min = $_ if not defined $min or $min > $_;
+    $max = $_ if not defined $max or $max < $_;
+  }
+  return($min, $max);
+}
+
