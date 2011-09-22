@@ -3,21 +3,99 @@ use strict;
 use warnings;
 use Getopt::Long qw(GetOptions);
 use Term::Size ();
+use Pod::Usage qw(pod2usage);
 
 GetOptions(
   my $opt = {},
   'sort',
+  'min=s',
+  'max=s',
   'width|w=i',
-  'delimiter=s',
-  'scaletotal',
+  'delimiter|d=s',
   'numeric-format|nf=s',
   'style=s',
+  'man',
+  'help|h',
 );
 
-my $delimiter = "\\s+";
-$delimiter = qr/$opt->{delimiter}/ if defined($opt->{delimiter});
+pod2usage({-verbose => 2}) if $opt->{man};
+pod2usage({-verbose => 0}) if $opt->{help};
+
+=pod
+
+=head1 NAME
+
+drawasciihist - draw simple text histograms
+
+=head1 SYNOPSIS
+
+  generator | drawasciihist [--sort] [--width=<ncols>] [--style=<ident>]
+                            [--numeric-format|nf=<printf format>]
+                            [--delimiter|d=<regexp>]
+                            [--min=X] [--max=X]
+
+Together with the C<histify> tool, this can easily produce simple
+visualizations for quickly analyzing simple data in a console. Run the
+script with the C<--man> option to see an example.
+
+The tool expects to read histogram data from STDIN, one bin per line.
+If a given input line has two or more columns (see the C<--delimiter>
+option), the first column will be used as the bin name, the second as
+the numeric bin content. If an input line has only one column, the
+bin description will be the bin number.
+
+By default, the output histogram will have a range from 0 to the maximum
+value in any bin. You can change the histogram range with the C<--min=X>
+and C<--max=X> options, providing numeric values for minimum and maximum.
+The C<--max> option also allows special values of C<auto> and C<total>.
+C<auto> is the default behaviour of --max and corresponds to the maximum
+bin content. C<--max=total> will use the sum of all histogram contents
+instead. The C<--min> option only understands C<auto> which forces it to
+use the smallest bin content as the lower display boundary.
+
+The output histogram width is determined automatically from your
+terminal size, if any. Otherwise assumes 80 columns. You can set the
+width explicitly using C<--width=ncols>. The C<--sort> option sorts
+the bins by content instead of input order.
+
+If the C<--numeric-format> option is present, then the actual numeric
+value is included in the histogram using the given C<printf> format.
+For positive integers, you would use C<--nf='%u'>, for signed integers,
+use C<--nf='%i'> and for fixed precision floats, you can use something
+like C<--nf='%.2f'>.
+
+The delimiter for splitting an input line into columns defaults to
+any whitespace. You can change that by supplying a Perl regular
+expression to the C<--delimiter=...> option.
+
+You can choose the character to be used for drawing histograms with the
+C<--style=[character]> option. The characters '-', '=', '~' are special
+cased to use an arrow-like appearance.
+
+=head1 EXAMPLE OUTPUT
+
+  $ perl -e 'print $_*(rand()), "\n" for 1..100000' \
+          | histify | drawasciihist -nf='%u' -w=70
+
+   1:   33155|~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~>|
+   2:   19010|~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~>                         |
+   3:   13972|~~~~~~~~~~~~~~~~~~~~~~~>                                  |
+   4:   10476|~~~~~~~~~~~~~~~~~>                                        |
+   5:    7919|~~~~~~~~~~~~>                                             |
+   6:    5959|~~~~~~~~~>                                                |
+   7:    4446|~~~~~~>                                                   |
+   8:    2913|~~~~>                                                     |
+   9:    1611|~>                                                        |
+  10:     538|                                                          |
+
+=cut
+
+
+my $input_col_delimiter = "\\s+";
+$input_col_delimiter = qr/$opt->{delimiter}/ if defined($opt->{delimiter});
 $opt->{style} = '~' if not defined $opt->{style};
 
+# Determine the style to use for drawing the histogram
 my %styles = (
   '-' => {character => '-', end_character => '>'},
   '=' => {character => '=', end_character => '>'},
@@ -34,79 +112,104 @@ if (not exists $styles{$opt->{style}}) {
   }
 }
 
+my $styledef = $styles{$opt->{style}};
+
 # read all input
 my @rows;
-my $i = 0;
+my $rowcount = 0;
 while (<STDIN>) {
-  ++$i;
+  ++$rowcount;
   chomp;
   s/^\s+//;
-  my @col = split /$delimiter/o, $_;
-  next if @col == 0;
-  if (@col == 1) {
-    push @rows, [$i, $col[0]];
+  my @columns = split /$input_col_delimiter/o, $_;
+  next if @columns == 0;
+  if (@columns == 1) {
+    push @rows, [$rowcount, $columns[0]];
   } else {
-    push @rows, [@col[0,1]];
+    push @rows, [@columns[0,1]];
   }
 }
 
-# extract min/max/width info from input data
-my $desc_width = 0;
-my $val_width  = 0;
-my $hist_total = 0;
 my $show_numeric = defined($opt->{"numeric-format"});
-my $numeric_format = $show_numeric ? $opt->{"numeric-format"} : "%f";
+my $numeric_format = $show_numeric ? $opt->{"numeric-format"} : "%.2f";
+
+# The $v_ prefixed variables below refer to "visible" widths in columns.
+
+# extract min/max/width info from input data
+my $v_desc_width = 0;
+my $v_numeric_value_width  = 0;
+my $hist_total = 0;
 my ($hist_max, $hist_min);
 foreach my $row (@rows) {
-  my ($desc, $value) = @$row;
-  my $formatted = sprintf($numeric_format, $value);
+  my ($description, $value) = @$row;
+  my $formatted_value = sprintf($numeric_format, $value);
 
-  $desc_width = length($desc) if length($desc) > $desc_width;
-  $val_width  = length($formatted) if length($formatted) > $val_width;
+  $v_desc_width = length($description) if length($description) > $v_desc_width;
+  $v_numeric_value_width  = length($formatted_value) if length($formatted_value) > $v_numeric_value_width;
   $hist_min = $value if !defined $hist_min or $value < $hist_min;
   $hist_max = $value if !defined $hist_max or $value > $hist_max;
   $hist_total += $value;
-  push @$row, $show_numeric ? $formatted : '';
+  # extend each row by the formatted numeric value -- just in case.
+  push @$row, $show_numeric ? $formatted_value : '';
 }
 
 # sort by value if desired
 @rows = sort {$a->[1] <=> $b->[1]} @rows if $opt->{sort};
 
 # figure out output width
-my ($tcols, $trows);
+my ($terminal_columns, $terminal_rows);
 if (-t *STDOUT) {
-  ($tcols, $trows) = Term::Size::chars(*STDOUT{IO});
+  ($terminal_columns, $terminal_rows) = Term::Size::chars(*STDOUT{IO});
 }
 else {
-  $tcols = 80;
+  $terminal_columns = 80;
 }
-my $width = $opt->{width} || $tcols-2;
 
-if ($width < $desc_width + 3) {
+my $v_total_width = $opt->{width} || $terminal_columns-2;
+
+if ($v_total_width < $v_desc_width + 3) {
   warn "Terminal or desired width is insufficient.\n";
-  $width = $desc_width + 3;
+  $v_total_width = $v_desc_width + 3;
 }
 
-my $vwidth = $show_numeric ? $val_width+2 : 0;
-my $hwidth = $width - $desc_width - $vwidth - 3;
-
-my $scale = $opt->{scaletotal} ? $hist_total : $hist_max;
+$v_numeric_value_width = $show_numeric ? $v_numeric_value_width+2 : 0;
+# The total output width is comprised of the bin description, possibly
+# the width of the numeric bin content, and the width of the actual
+# histogram.
+my $v_hist_width = $v_total_width - $v_desc_width - $v_numeric_value_width - 3;
 
 # format the output
-my $format = "%${desc_width}s: %${vwidth}s|%-${hwidth}s|\n";
-my $styledef = $styles{$opt->{style}};
-my $hchar = $styledef->{character};
-my $end_hchar = $styledef->{end_character};
-my $end_hchar_len = length($end_hchar);
+my $format = "%${v_desc_width}s: %${v_numeric_value_width}s|%-${v_hist_width}s|\n";
+my $hchar_body = $styledef->{character};
+my $hchar_end = $styledef->{end_character};
+my $hchar_end_len = length($hchar_end);
+
+my $min_display_value = $opt->{min} || 0;
+if ($opt->{min} =~ /^auto$/i) {
+  $min_display_value = $hist_min;
+}
+
+my $max_display_value = $opt->{max};
+if (not defined $max_display_value or $max_display_value =~ /^auto$/) {
+  $max_display_value = $hist_max;
+}
+elsif ($max_display_value =~ /^total$/i) {
+  $max_display_value = $hist_total;
+}
+
+my $display_value_range = $max_display_value - $min_display_value;
 
 foreach my $row (@rows) {
-  my $value = $row->[1];
-  my $hlen = int($value / $scale * $hwidth);
-  if ($hlen >= $end_hchar_len) {
-    printf($format, $row->[0], $row->[2], ($hchar x ($hlen-$end_hchar_len)) . $end_hchar);
+  my ($desc, $value, $formatted_value) = @$row;
+  my $hlen = int(($value-$min_display_value) / $display_value_range * $v_hist_width);
+  $hlen = 0 if $hlen < 0;
+  $hlen = $v_hist_width if $hlen > $v_hist_width;
+
+  if ($hlen >= $hchar_end_len) {
+    printf($format, $desc, $formatted_value, ($hchar_body x ($hlen-$hchar_end_len)) . $hchar_end);
   }
   else {
-    printf($format, $row->[0], $row->[2], ($hchar x $hlen));
+    printf($format, $desc, $formatted_value, ($hchar_body x $hlen));
   }
 }
 
