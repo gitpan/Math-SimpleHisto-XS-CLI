@@ -32,7 +32,7 @@
       },
       "runtime" : {
          "requires" : {
-            "Math::SimpleHisto::XS" : "1.10",
+            "Math::SimpleHisto::XS" : "1.21",
             "Pod::Usage" : 0,
             "Term::Size" : "0.200",
             "Test::More" : "0.88"
@@ -40,5 +40,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "1.03"
+   "version" : "1.04"
 }
